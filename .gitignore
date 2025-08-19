@@ -12,9 +12,6 @@ Thumbs.db
 *.temp
 *.log
 
-# 로컬 설정 파일 (API 키 등)
-config.local.sh
-
 # IDE
 .vscode/
 .idea/
