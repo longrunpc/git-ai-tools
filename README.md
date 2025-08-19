@@ -2,7 +2,7 @@
 
 **AI가 만들어주는 Git 커밋 메시지와 PR 자동화**
 
-AI를 사용하여 의미있는 커밋 메시지와 풀 리퀘스트 설명을 자동으로 생성합니다. 여러 프로그래밍 언어와 프로젝트 타입을 지능적으로 감지하여 맞춤형 메시지를 제공합니다.
+AI를 사용하여 의미있는 커밋 메시지와 풀 리퀘스트 설명을 자동으로 생성합니다. 여러 프로그래밍 언어와 프로젝트 타입을 지능적으로 감지하여 맞춤형 메시지를 제공합니다. 이 프로젝트는 claude-4-sonnet을 사용하여 제작했습니다.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![macOS](https://img.shields.io/badge/macOS-지원-brightgreen.svg)](https://www.apple.com/macos/)
