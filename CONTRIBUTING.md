@@ -6,7 +6,7 @@ AI 개발 도구에 관심을 가져주셔서 감사합니다! 커뮤니티의 �
 
 ### 버그 신고
 
-1. [Issues](https://github.com/yourusername/ai-dev-tools/issues)에서 이미 신고된 버그인지 확인
+1. [Issues](https://github.com/longrunpc/ai-dev-tools/issues)에서 이미 신고된 버그인지 확인
 2. 새로운 이슈라면 다음 정보와 함께 이슈 생성:
    - 버그에 대한 명확한 설명
    - 재현 단계
@@ -15,7 +15,7 @@ AI 개발 도구에 관심을 가져주셔서 감사합니다! 커뮤니티의 �
 
 ### 기능 제안
 
-1. [Discussions](https://github.com/yourusername/ai-dev-tools/discussions)에서 기존 요청 확인
+1. [Discussions](https://github.com/longrunpc/ai-dev-tools/discussions)에서 기존 요청 확인
 2. 새로운 토론이나 이슈 생성 시 다음 포함:
    - 기능에 대한 명확한 설명
    - 사용 사례와 이점
@@ -25,7 +25,7 @@ AI 개발 도구에 관심을 가져주셔서 감사합니다! 커뮤니티의 �
 
 1. **저장소 포크**
    ```bash
-   git clone https://github.com/yourusername/ai-dev-tools.git
+   git clone https://github.com/longrunpc/ai-dev-tools.git
    cd ai-dev-tools
    ```
 
