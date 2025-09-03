@@ -39,6 +39,89 @@ check_gh_cli() {
     fi
 }
 
+# 함수: 원격 저장소 감지 및 설정
+setup_remote_repository() {
+    echo -e "${BLUE}🔍 원격 저장소를 확인하고 있습니다...${NC}"
+    
+    # 모든 원격 저장소 목록 가져오기
+    local remotes=($(git remote))
+    
+    if [ ${#remotes[@]} -eq 0 ]; then
+        echo -e "${YELLOW}⚠️  원격 저장소가 설정되어 있지 않습니다.${NC}"
+        echo -e "${BLUE}💡 GitHub 저장소를 자동으로 생성하시겠습니까?${NC}"
+        
+        read -p "GitHub 저장소를 생성하고 연결하시겠습니까? (y/N): " -r
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            # 현재 디렉토리명을 저장소 이름으로 사용
+            local repo_name=$(basename "$(pwd)")
+            
+            echo -e "${BLUE}📦 GitHub에 '$repo_name' 저장소를 생성하고 있습니다...${NC}"
+            
+            # GitHub CLI로 저장소 생성
+            if gh repo create "$repo_name" --private --source=. --remote=origin --push; then
+                echo -e "${GREEN}✅ GitHub 저장소가 성공적으로 생성되고 연결되었습니다!${NC}"
+                DEFAULT_REMOTE="origin"
+                # 원격 저장소 목록 재갱신
+                remotes=($(git remote))
+            else
+                echo -e "${RED}❌ GitHub 저장소 생성에 실패했습니다.${NC}"
+                echo -e "${YELLOW}💡 수동으로 저장소를 생성하고 원격 저장소를 추가해주세요:${NC}"
+                echo "git remote add origin <저장소-URL>"
+                exit 1
+            fi
+        else
+            echo -e "${YELLOW}💡 수동으로 GitHub에 저장소를 생성하고 원격 저장소를 추가해주세요:${NC}"
+            echo "git remote add origin <저장소-URL>"
+            exit 1
+        fi
+    else
+        # 기본 원격 저장소 결정
+        if [[ " ${remotes[*]} " =~ " origin " ]]; then
+            DEFAULT_REMOTE="origin"
+        elif [[ " ${remotes[*]} " =~ " upstream " ]]; then
+            DEFAULT_REMOTE="upstream"
+        else
+            DEFAULT_REMOTE="${remotes[0]}"
+        fi
+    fi
+    
+    # 포크된 저장소인지 확인 (origin과 upstream이 모두 있는 경우)
+    if [[ " ${remotes[*]} " =~ " origin " ]] && [[ " ${remotes[*]} " =~ " upstream " ]]; then
+        echo -e "${BLUE}🍴 포크된 저장소를 감지했습니다.${NC}"
+        echo "  - origin: $(git remote get-url origin)"
+        echo "  - upstream: $(git remote get-url upstream)"
+        
+        # 기본적으로 upstream을 사용하되 사용자에게 선택권 제공
+        echo -e "${YELLOW}💡 PR을 어느 저장소로 보내시겠습니까?${NC}"
+        echo "  1. upstream (원본 저장소) - 권장"
+        echo "  2. origin (포크된 저장소)"
+        
+        while true; do
+            read -p "선택 (1-2, 엔터키=upstream): " -r remote_choice
+            
+            if [ -z "$remote_choice" ] || [ "$remote_choice" = "1" ]; then
+                DEFAULT_REMOTE="upstream"
+                break
+            elif [ "$remote_choice" = "2" ]; then
+                DEFAULT_REMOTE="origin"
+                break
+            else
+                echo -e "${RED}❌ 잘못된 선택입니다. 1 또는 2를 입력해주세요.${NC}"
+            fi
+        done
+    fi
+    
+    echo -e "${GREEN}✅ 사용할 원격 저장소: $DEFAULT_REMOTE${NC}"
+    echo ""
+    
+    # 원격 저장소 연결 테스트
+    if ! git ls-remote --heads "$DEFAULT_REMOTE" &>/dev/null; then
+        echo -e "${RED}❌ '$DEFAULT_REMOTE' 원격 저장소에 접근할 수 없습니다.${NC}"
+        echo "네트워크 연결이나 저장소 권한을 확인해주세요."
+        exit 1
+    fi
+}
+
 # 함수: OpenAI API 호출
 call_openai() {
     local prompt="$1"
@@ -81,16 +164,40 @@ resolves: #이슈번호
             temperature: $temperature
         }')
 
-    curl -s https://api.openai.com/v1/chat/completions \
+    # API 호출 (타임아웃 30초)
+    local response
+    response=$(curl -s --max-time 30 --connect-timeout 10 https://api.openai.com/v1/chat/completions \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $OPENAI_API_KEY" \
-        -d "$json_data" | jq -r '.choices[0].message.content'
+        -d "$json_data" 2>&1)
+    
+    local curl_exit_code=$?
+    
+    if [ $curl_exit_code -ne 0 ]; then
+        echo -e "${RED}❌ API 호출 실패 (curl 종료 코드: $curl_exit_code)${NC}" >&2
+        echo -e "${RED}네트워크 연결을 확인하거나 잠시 후 다시 시도해주세요.${NC}" >&2
+        exit 1
+    fi
+    
+    # JSON 파싱 및 오류 확인
+    local content
+    content=$(echo "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+    
+    if [ -z "$content" ]; then
+        local error_msg
+        error_msg=$(echo "$response" | jq -r '.error.message // "알 수 없는 오류"' 2>/dev/null)
+        echo -e "${RED}❌ API 오류: $error_msg${NC}" >&2
+        echo -e "${YELLOW}응답 내용: $response${NC}" >&2
+        exit 1
+    fi
+    
+    echo "$content"
 }
 
 # 함수: Anthropic API 호출
 call_anthropic() {
     local prompt="$1"
-    curl -s https://api.anthropic.com/v1/messages \
+    curl -s --max-time 30 https://api.anthropic.com/v1/messages \
         -H "Content-Type: application/json" \
         -H "x-api-key: $ANTHROPIC_API_KEY" \
         -H "anthropic-version: 2023-06-01" \
@@ -104,7 +211,7 @@ call_anthropic() {
                     \"content\": \"$prompt\"
                 }
             ]
-        }" | jq -r '.content[0].text'
+        }" | jq -r '.content[0].text // .error.message // "API 호출 실패"'
 }
 
 # 명령줄 인수 처리
@@ -115,10 +222,29 @@ if [ "$1" = "--target" ] || [ "$1" = "-t" ]; then
         echo -e "${BLUE}📌 명령줄에서 지정된 대상 브랜치: $target_branch_arg${NC}"
         echo ""
         
-        # 지정된 브랜치가 존재하는지 확인
+        # 지정된 브랜치가 로컬과 원격에 존재하는지 확인
         if ! git show-ref --verify --quiet "refs/heads/$target_branch_arg"; then
-            echo -e "${RED}❌ '$target_branch_arg' 브랜치가 존재하지 않습니다.${NC}"
+            echo -e "${RED}❌ '$target_branch_arg' 로컬 브랜치가 존재하지 않습니다.${NC}"
             exit 1
+        fi
+        
+        if ! git ls-remote --heads "$DEFAULT_REMOTE" "$target_branch_arg" | grep -q "$target_branch_arg"; then
+            echo -e "${YELLOW}⚠️  '$target_branch_arg' 브랜치가 원격 저장소에 없습니다.${NC}"
+            echo -e "${BLUE}💡 PR 생성을 위해 먼저 원격에 푸시가 필요합니다.${NC}"
+            read -p "지금 푸시하시겠습니까? (y/N): " -r
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo -e "${BLUE}📤 '$target_branch_arg' 브랜치를 원격으로 푸시 중...${NC}"
+                if git push -u "$DEFAULT_REMOTE" "$target_branch_arg"; then
+                    echo -e "${GREEN}✅ 푸시 완료${NC}"
+                else
+                    echo -e "${RED}❌ 푸시 실패${NC}"
+                    exit 1
+                fi
+            else
+                echo -e "${YELLOW}❌ 원격 푸시 없이는 PR을 생성할 수 없습니다.${NC}"
+                echo -e "${BLUE}💡 수동으로 푸시하려면: git push -u $DEFAULT_REMOTE $target_branch_arg${NC}"
+                exit 1
+            fi
         fi
     else
         echo -e "${RED}❌ --target 옵션에는 브랜치명이 필요합니다.${NC}"
@@ -143,6 +269,7 @@ fi
 if [ "$1" != "--help" ] && [ "$1" != "-h" ]; then
     check_api_key
     check_gh_cli
+    setup_remote_repository
 fi
 
 # 현재 브랜치 확인 (도움말이 아닌 경우에만)
@@ -155,14 +282,29 @@ if [ "$1" != "--help" ] && [ "$1" != "-h" ]; then
     fi
 fi
 
-# 푸시되지 않은 커밋이 있는지 확인
-if ! git diff --quiet HEAD origin/"$current_branch" 2>/dev/null; then
-    echo -e "${BLUE}📤 변경사항을 원격 저장소로 푸시합니다...${NC}"
-    git push origin "$current_branch" || {
-        echo -e "${BLUE}📤 첫 번째 푸시입니다...${NC}"
-        git push -u origin "$current_branch"
-    }
-fi
+# 현재 브랜치를 적절한 원격 저장소로 푸시
+push_current_branch() {
+    # 포크된 저장소인 경우 현재 브랜치는 origin에 푸시
+    local push_remote="origin"
+    
+    # origin이 없으면 DEFAULT_REMOTE 사용
+    if ! git remote | grep -q "^origin$"; then
+        push_remote="$DEFAULT_REMOTE"
+    fi
+    
+    echo -e "${BLUE}📤 현재 브랜치를 $push_remote로 푸시합니다...${NC}"
+    
+    # 푸시되지 않은 커밋이 있는지 확인
+    if ! git diff --quiet HEAD "$push_remote"/"$current_branch" 2>/dev/null; then
+        echo -e "${BLUE}📤 변경사항을 원격 저장소로 푸시합니다...${NC}"
+        git push "$push_remote" "$current_branch" || {
+            echo -e "${BLUE}📤 첫 번째 푸시입니다...${NC}"
+            git push -u "$push_remote" "$current_branch"
+        }
+    fi
+}
+
+push_current_branch
 
 # 대상 브랜치 선택
 if [ -n "$target_branch_arg" ]; then
@@ -173,37 +315,116 @@ else
     echo -e "${BLUE}🎯 PR을 보낼 대상 브랜치를 선택해주세요:${NC}"
     echo ""
 
-    # 사용 가능한 브랜치 목록 표시
+    # 사용 가능한 브랜치 목록 표시 (로컬에 있는 모든 브랜치들)
     available_branches=()
-    if git show-ref --verify --quiet refs/heads/main; then
-        available_branches+=("main")
-    fi
-    if git show-ref --verify --quiet refs/heads/master; then
-        available_branches+=("master")
-    fi
-    if git show-ref --verify --quiet refs/heads/dev; then
-        available_branches+=("dev")
-    fi
-    if git show-ref --verify --quiet refs/heads/develop; then
-        available_branches+=("develop")
+    remote_status=()
+    
+    # 현재 브랜치를 제외한 모든 로컬 브랜치 가져오기
+    all_branches=($(git branch --format='%(refname:short)' | grep -v "^$current_branch$"))
+    
+    # 주요 브랜치들을 우선적으로 배치
+    priority_branches=("main" "master" "dev" "develop")
+    
+    # 우선순위 브랜치들을 먼저 추가
+    for priority_branch in "${priority_branches[@]}"; do
+        if [[ " ${all_branches[*]} " =~ " $priority_branch " ]]; then
+            available_branches+=("$priority_branch")
+            # 원격에 있는지 확인
+            if git ls-remote --heads "$DEFAULT_REMOTE" "$priority_branch" | grep -q "$priority_branch"; then
+                remote_status+=("✅")
+            else
+                remote_status+=("📤")
+            fi
+        fi
+    done
+    
+    # 나머지 브랜치들을 알파벳 순으로 추가
+    for branch in $(printf '%s\n' "${all_branches[@]}" | grep -v -E '^(main|master|dev|develop)$' | sort); do
+        available_branches+=("$branch")
+        # 원격에 있는지 확인
+        if git ls-remote --heads "$DEFAULT_REMOTE" "$branch" | grep -q "$branch"; then
+            remote_status+=("✅")
+        else
+            remote_status+=("📤")
+        fi
+    done
+    
+    # 브랜치가 하나도 없으면 기본 브랜치라도 표시
+    if [ ${#available_branches[@]} -eq 0 ]; then
+        if git show-ref --verify --quiet refs/heads/main; then
+            available_branches+=("main")
+            remote_status+=("✅")
+        elif git show-ref --verify --quiet refs/heads/master; then
+            available_branches+=("master")
+            remote_status+=("✅")
+        fi
     fi
 
-    # 기본 브랜치 설정
-    default_branch="main"
-    if ! git show-ref --verify --quiet refs/heads/main; then
-        default_branch="master"
+    # 기본 브랜치 설정 (사용 가능한 브랜치 중에서 선택)
+    default_branch=""
+    if [ ${#available_branches[@]} -gt 0 ]; then
+        # 우선순위: main > master > dev > develop > 첫 번째 브랜치
+        for priority in "main" "master" "dev" "develop"; do
+            if [[ " ${available_branches[*]} " =~ " $priority " ]]; then
+                default_branch="$priority"
+                break
+            fi
+        done
+        
+        # 우선순위 브랜치가 없으면 첫 번째 브랜치를 기본값으로
+        if [ -z "$default_branch" ]; then
+            default_branch="${available_branches[0]}"
+        fi
+    else
+        # 사용 가능한 브랜치가 없으면 main/master 중 하나
+        if git show-ref --verify --quiet refs/heads/main; then
+            default_branch="main"
+        else
+            default_branch="master"
+        fi
     fi
 
     # 브랜치 선택 메뉴 표시
-    echo "사용 가능한 브랜치:"
-    for i in "${!available_branches[@]}"; do
-        branch="${available_branches[$i]}"
-        if [ "$branch" = "$default_branch" ]; then
-            echo -e "${GREEN}  $((i+1)). $branch (기본)${NC}"
-        else
-            echo -e "${BLUE}  $((i+1)). $branch${NC}"
-        fi
-    done
+    echo "사용 가능한 브랜치 (총 ${#available_branches[@]}개):"
+    
+    # 브랜치가 많을 때는 처음 20개만 표시하고 더보기 옵션 제공
+    display_limit=20
+    show_all=false
+    
+    if [ ${#available_branches[@]} -gt $display_limit ] && [ "$show_all" = false ]; then
+        echo -e "${YELLOW}💡 브랜치가 많습니다. 처음 ${display_limit}개만 표시합니다.${NC}"
+        echo ""
+        
+        for i in $(seq 0 $((display_limit-1))); do
+            if [ $i -lt ${#available_branches[@]} ]; then
+                branch="${available_branches[$i]}"
+                status="${remote_status[$i]}"
+                
+                if [ "$branch" = "$default_branch" ]; then
+                    echo -e "${GREEN}  $((i+1)). $branch (기본) $status${NC}"
+                else
+                    echo -e "${BLUE}  $((i+1)). $branch $status${NC}"
+                fi
+            fi
+        done
+        
+        echo ""
+        echo -e "${YELLOW}  a. 모든 브랜치 보기 (${#available_branches[@]}개)${NC}"
+    else
+        for i in "${!available_branches[@]}"; do
+            branch="${available_branches[$i]}"
+            status="${remote_status[$i]}"
+            
+            if [ "$branch" = "$default_branch" ]; then
+                echo -e "${GREEN}  $((i+1)). $branch (기본) $status${NC}"
+            else
+                echo -e "${BLUE}  $((i+1)). $branch $status${NC}"
+            fi
+        done
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}범례: ✅ 원격에 있음, 📤 원격 푸시 필요${NC}"
 
     # 직접 브랜치명 입력 옵션
     echo -e "${YELLOW}  0. 직접 입력${NC}"
@@ -211,12 +432,36 @@ else
 
     # 사용자 입력 받기
     while true; do
-        read -p "선택 (1-${#available_branches[@]} 또는 0, 엔터키=기본값): " -r choice
+        if [ ${#available_branches[@]} -gt $display_limit ] && [ "$show_all" = false ]; then
+            read -p "선택 (1-$display_limit, a=모두보기, 0=직접입력, 엔터키=기본값): " -r choice
+        else
+            read -p "선택 (1-${#available_branches[@]} 또는 0, 엔터키=기본값): " -r choice
+        fi
         
         if [ -z "$choice" ]; then
             # 엔터키만 눌렀을 때 기본값 사용
             target_branch="$default_branch"
             break
+        elif [ "$choice" = "a" ] && [ ${#available_branches[@]} -gt $display_limit ] && [ "$show_all" = false ]; then
+            # 모든 브랜치 보기
+            show_all=true
+            echo ""
+            echo "모든 브랜치 (총 ${#available_branches[@]}개):"
+            for i in "${!available_branches[@]}"; do
+                branch="${available_branches[$i]}"
+                status="${remote_status[$i]}"
+                
+                if [ "$branch" = "$default_branch" ]; then
+                    echo -e "${GREEN}  $((i+1)). $branch (기본) $status${NC}"
+                else
+                    echo -e "${BLUE}  $((i+1)). $branch $status${NC}"
+                fi
+            done
+            echo ""
+            echo -e "${YELLOW}범례: ✅ 원격에 있음, 📤 원격 푸시 필요${NC}"
+            echo -e "${YELLOW}  0. 직접 입력${NC}"
+            echo ""
+            continue
         elif [[ "$choice" =~ ^[1-9][0-9]*$ ]] && [ "$choice" -le "${#available_branches[@]}" ]; then
             # 숫자 선택
             target_branch="${available_branches[$((choice-1))]}"
@@ -226,11 +471,31 @@ else
             while true; do
                 read -p "대상 브랜치명을 입력하세요: " -r target_branch
                 if [ -n "$target_branch" ]; then
-                    if git show-ref --verify --quiet "refs/heads/$target_branch"; then
-                        break
-                    else
-                        echo -e "${RED}❌ '$target_branch' 브랜치가 존재하지 않습니다. 다시 입력해주세요.${NC}"
+                    if ! git show-ref --verify --quiet "refs/heads/$target_branch"; then
+                        echo -e "${RED}❌ '$target_branch' 로컬 브랜치가 존재하지 않습니다. 다시 입력해주세요.${NC}"
+                        continue
                     fi
+                    
+                    if ! git ls-remote --heads "$DEFAULT_REMOTE" "$target_branch" | grep -q "$target_branch"; then
+                        echo -e "${YELLOW}⚠️  '$target_branch' 브랜치가 원격 저장소에 없습니다.${NC}"
+                        echo -e "${BLUE}💡 PR 생성을 위해 먼저 원격에 푸시가 필요합니다.${NC}"
+                        read -p "지금 푸시하시겠습니까? (y/N): " -r
+                        if [[ $REPLY =~ ^[Yy]$ ]]; then
+                            echo -e "${BLUE}📤 '$target_branch' 브랜치를 원격으로 푸시 중...${NC}"
+                            if git push -u "$DEFAULT_REMOTE" "$target_branch"; then
+                                echo -e "${GREEN}✅ 푸시 완료${NC}"
+                                break
+                            else
+                                echo -e "${RED}❌ 푸시 실패${NC}"
+                                continue
+                            fi
+                        else
+                            echo -e "${YELLOW}다른 브랜치를 선택하거나 수동으로 푸시하세요.${NC}"
+                            continue
+                        fi
+                    fi
+                    
+                    break
                 fi
             done
             break
@@ -318,25 +583,17 @@ DESCRIPTION:
 
 # AI API 호출
 if [ -n "$OPENAI_API_KEY" ]; then
-    echo -e "${BLUE}📡 OpenAI API 호출 중...${NC}"
+    echo -e "${BLUE}📡 OpenAI API 호출 중... (30초 타임아웃)${NC}"
     ai_response=$(call_openai "$prompt")
 elif [ -n "$ANTHROPIC_API_KEY" ]; then
-    echo -e "${BLUE}📡 Anthropic API 호출 중...${NC}"
+    echo -e "${BLUE}📡 Anthropic API 호출 중... (30초 타임아웃)${NC}"
     ai_response=$(call_anthropic "$prompt")
-fi
-
-# 디버깅: API 응답 확인
-echo -e "${YELLOW}🔍 API 응답 길이: ${#ai_response}${NC}"
-if [ -n "$ai_response" ]; then
-    echo -e "${YELLOW}🔍 응답 첫 100자:${NC} $(echo "$ai_response" | head -c 100)..."
-fi
-
-# API 응답 확인
-if [ -z "$ai_response" ] || [ "$ai_response" = "null" ]; then
-    echo -e "${RED}❌ AI API 호출에 실패했습니다.${NC}"
-    echo "수동으로 PR을 생성하거나 다시 시도해주세요."
+else
+    echo -e "${RED}❌ API 키가 설정되지 않았습니다.${NC}"
     exit 1
 fi
+
+echo -e "${GREEN}✅ AI 응답 받음 (${#ai_response}자)${NC}"
 
 # 제목과 설명 분리
 pr_title=$(echo "$ai_response" | grep "^TITLE:" | sed 's/^TITLE: //')
@@ -377,7 +634,15 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "$pr_description" > "$temp_file"
 
     # GitHub CLI로 PR 생성
-    pr_url=$(gh pr create --title "$pr_title" --body-file "$temp_file" --base "$target_branch" --head "$current_branch")
+    # 포크된 저장소에서 upstream으로 PR을 보내는 경우 처리
+    if [ "$DEFAULT_REMOTE" = "upstream" ]; then
+        # 현재 브랜치가 origin에 있고 upstream으로 PR을 보내는 경우
+        origin_user=$(git remote get-url origin | sed -n 's/.*github.com[:/]\([^/]*\)\/.*/\1/p')
+        pr_url=$(gh pr create --title "$pr_title" --body-file "$temp_file" --base "$target_branch" --head "$origin_user:$current_branch" --repo $(git remote get-url upstream | sed -n 's/.*github.com[:/]\([^/]*\/[^/]*\)\.git.*/\1/p'))
+    else
+        # 일반적인 경우 (origin에서 origin으로, 또는 단일 원격 저장소)
+        pr_url=$(gh pr create --title "$pr_title" --body-file "$temp_file" --base "$target_branch" --head "$current_branch")
+    fi
 
     # 임시 파일 삭제
     rm "$temp_file"

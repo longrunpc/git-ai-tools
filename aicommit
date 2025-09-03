@@ -52,10 +52,33 @@ call_openai() {
             temperature: $temperature
         }')
 
-    curl -s https://api.openai.com/v1/chat/completions \
+    # API 호출 (타임아웃 10초로 설정)
+    local response
+    response=$(curl -s --max-time 10 --connect-timeout 5 https://api.openai.com/v1/chat/completions \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $OPENAI_API_KEY" \
-        -d "$json_data" | jq -r '.choices[0].message.content'
+        -d "$json_data" 2>&1)
+    
+    local curl_exit_code=$?
+    
+    if [ $curl_exit_code -ne 0 ]; then
+        echo -e "${RED}❌ API 호출 실패 (curl 종료 코드: $curl_exit_code)${NC}" >&2
+        echo -e "${RED}네트워크 연결을 확인하거나 잠시 후 다시 시도해주세요.${NC}" >&2
+        exit 1
+    fi
+    
+    # JSON 파싱 및 오류 확인
+    local content
+    content=$(echo "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+    
+    if [ -z "$content" ]; then
+        local error_msg
+        error_msg=$(echo "$response" | jq -r '.error.message // "알 수 없는 오류"' 2>/dev/null)
+        echo -e "${RED}❌ API 오류: $error_msg${NC}" >&2
+        exit 1
+    fi
+    
+    echo "$content"
 }
 
 # 함수: Anthropic API 호출
@@ -134,19 +157,14 @@ $(echo "$git_diff" | head -100)
 
     # AI API 호출
     if [ -n "$OPENAI_API_KEY" ]; then
-        echo -e "${BLUE}📡 OpenAI API 호출 중...${NC}"
+        echo -e "${BLUE}📡 OpenAI API 호출 중... (10초 타임아웃)${NC}"
         commit_message=$(call_openai "$prompt")
     elif [ -n "$ANTHROPIC_API_KEY" ]; then
-        echo -e "${BLUE}📡 Anthropic API 호출 중...${NC}"
+        echo -e "${BLUE}📡 Anthropic API 호출 중... (10초 타임아웃)${NC}"
         commit_message=$(call_anthropic "$prompt")
     fi
 
-    # API 응답 확인
-    if [ -z "$commit_message" ] || [ "$commit_message" = "null" ]; then
-        echo -e "${RED}❌ AI API 호출에 실패했습니다.${NC}"
-        echo "수동으로 커밋하거나 다시 시도해주세요."
-        exit 1
-    fi
+    echo -e "${GREEN}✅ AI 응답 받음${NC}"
 
     echo -e "${GREEN}✨ AI가 생성한 커밋 메시지:${NC}"
     echo "================================"
