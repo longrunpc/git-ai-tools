@@ -164,9 +164,9 @@ resolves: #이슈번호
             temperature: $temperature
         }')
 
-    # API 호출 (타임아웃 10초로 단축)
+    # API 호출 (타임아웃 30초)
     local response
-    response=$(curl -s --max-time 10 --connect-timeout 5 https://api.openai.com/v1/chat/completions \
+    response=$(curl -s --max-time 30 --connect-timeout 10 https://api.openai.com/v1/chat/completions \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $OPENAI_API_KEY" \
         -d "$json_data" 2>&1)
@@ -315,16 +315,22 @@ else
     echo -e "${BLUE}🎯 PR을 보낼 대상 브랜치를 선택해주세요:${NC}"
     echo ""
 
-    # 사용 가능한 브랜치 목록 표시 (로컬에 있는 주요 브랜치들)
+    # 사용 가능한 브랜치 목록 표시 (로컬에 있는 모든 브랜치들)
     available_branches=()
     remote_status=()
     
-    # 주요 브랜치들을 확인
-    for branch in "main" "master" "dev" "develop"; do
-        if git show-ref --verify --quiet "refs/heads/$branch"; then
-            available_branches+=("$branch")
+    # 현재 브랜치를 제외한 모든 로컬 브랜치 가져오기
+    local all_branches=($(git branch --format='%(refname:short)' | grep -v "^$current_branch$"))
+    
+    # 주요 브랜치들을 우선적으로 배치
+    local priority_branches=("main" "master" "dev" "develop")
+    
+    # 우선순위 브랜치들을 먼저 추가
+    for priority_branch in "${priority_branches[@]}"; do
+        if [[ " ${all_branches[*]} " =~ " $priority_branch " ]]; then
+            available_branches+=("$priority_branch")
             # 원격에 있는지 확인
-            if git ls-remote --heads "$DEFAULT_REMOTE" "$branch" | grep -q "$branch"; then
+            if git ls-remote --heads "$DEFAULT_REMOTE" "$priority_branch" | grep -q "$priority_branch"; then
                 remote_status+=("✅")
             else
                 remote_status+=("📤")
@@ -332,7 +338,18 @@ else
         fi
     done
     
-    # 브랜치가 없으면 최소한 main이나 master는 표시
+    # 나머지 브랜치들을 알파벳 순으로 추가
+    for branch in $(printf '%s\n' "${all_branches[@]}" | grep -v -E '^(main|master|dev|develop)$' | sort); do
+        available_branches+=("$branch")
+        # 원격에 있는지 확인
+        if git ls-remote --heads "$DEFAULT_REMOTE" "$branch" | grep -q "$branch"; then
+            remote_status+=("✅")
+        else
+            remote_status+=("📤")
+        fi
+    done
+    
+    # 브랜치가 하나도 없으면 기본 브랜치라도 표시
     if [ ${#available_branches[@]} -eq 0 ]; then
         if git show-ref --verify --quiet refs/heads/main; then
             available_branches+=("main")
@@ -343,24 +360,69 @@ else
         fi
     fi
 
-    # 기본 브랜치 설정
-    default_branch="main"
-    if ! git show-ref --verify --quiet refs/heads/main; then
-        default_branch="master"
+    # 기본 브랜치 설정 (사용 가능한 브랜치 중에서 선택)
+    default_branch=""
+    if [ ${#available_branches[@]} -gt 0 ]; then
+        # 우선순위: main > master > dev > develop > 첫 번째 브랜치
+        for priority in "main" "master" "dev" "develop"; do
+            if [[ " ${available_branches[*]} " =~ " $priority " ]]; then
+                default_branch="$priority"
+                break
+            fi
+        done
+        
+        # 우선순위 브랜치가 없으면 첫 번째 브랜치를 기본값으로
+        if [ -z "$default_branch" ]; then
+            default_branch="${available_branches[0]}"
+        fi
+    else
+        # 사용 가능한 브랜치가 없으면 main/master 중 하나
+        if git show-ref --verify --quiet refs/heads/main; then
+            default_branch="main"
+        else
+            default_branch="master"
+        fi
     fi
 
     # 브랜치 선택 메뉴 표시
-    echo "사용 가능한 브랜치:"
-    for i in "${!available_branches[@]}"; do
-        branch="${available_branches[$i]}"
-        status="${remote_status[$i]}"
+    echo "사용 가능한 브랜치 (총 ${#available_branches[@]}개):"
+    
+    # 브랜치가 많을 때는 처음 20개만 표시하고 더보기 옵션 제공
+    local display_limit=20
+    local show_all=false
+    
+    if [ ${#available_branches[@]} -gt $display_limit ] && [ "$show_all" = false ]; then
+        echo -e "${YELLOW}💡 브랜치가 많습니다. 처음 ${display_limit}개만 표시합니다.${NC}"
+        echo ""
         
-        if [ "$branch" = "$default_branch" ]; then
-            echo -e "${GREEN}  $((i+1)). $branch (기본) $status${NC}"
-        else
-            echo -e "${BLUE}  $((i+1)). $branch $status${NC}"
-        fi
-    done
+        for i in $(seq 0 $((display_limit-1))); do
+            if [ $i -lt ${#available_branches[@]} ]; then
+                branch="${available_branches[$i]}"
+                status="${remote_status[$i]}"
+                
+                if [ "$branch" = "$default_branch" ]; then
+                    echo -e "${GREEN}  $((i+1)). $branch (기본) $status${NC}"
+                else
+                    echo -e "${BLUE}  $((i+1)). $branch $status${NC}"
+                fi
+            fi
+        done
+        
+        echo ""
+        echo -e "${YELLOW}  a. 모든 브랜치 보기 (${#available_branches[@]}개)${NC}"
+    else
+        for i in "${!available_branches[@]}"; do
+            branch="${available_branches[$i]}"
+            status="${remote_status[$i]}"
+            
+            if [ "$branch" = "$default_branch" ]; then
+                echo -e "${GREEN}  $((i+1)). $branch (기본) $status${NC}"
+            else
+                echo -e "${BLUE}  $((i+1)). $branch $status${NC}"
+            fi
+        done
+    fi
+    
     echo ""
     echo -e "${YELLOW}범례: ✅ 원격에 있음, 📤 원격 푸시 필요${NC}"
 
@@ -370,12 +432,36 @@ else
 
     # 사용자 입력 받기
     while true; do
-        read -p "선택 (1-${#available_branches[@]} 또는 0, 엔터키=기본값): " -r choice
+        if [ ${#available_branches[@]} -gt $display_limit ] && [ "$show_all" = false ]; then
+            read -p "선택 (1-$display_limit, a=모두보기, 0=직접입력, 엔터키=기본값): " -r choice
+        else
+            read -p "선택 (1-${#available_branches[@]} 또는 0, 엔터키=기본값): " -r choice
+        fi
         
         if [ -z "$choice" ]; then
             # 엔터키만 눌렀을 때 기본값 사용
             target_branch="$default_branch"
             break
+        elif [ "$choice" = "a" ] && [ ${#available_branches[@]} -gt $display_limit ] && [ "$show_all" = false ]; then
+            # 모든 브랜치 보기
+            show_all=true
+            echo ""
+            echo "모든 브랜치 (총 ${#available_branches[@]}개):"
+            for i in "${!available_branches[@]}"; do
+                branch="${available_branches[$i]}"
+                status="${remote_status[$i]}"
+                
+                if [ "$branch" = "$default_branch" ]; then
+                    echo -e "${GREEN}  $((i+1)). $branch (기본) $status${NC}"
+                else
+                    echo -e "${BLUE}  $((i+1)). $branch $status${NC}"
+                fi
+            done
+            echo ""
+            echo -e "${YELLOW}범례: ✅ 원격에 있음, 📤 원격 푸시 필요${NC}"
+            echo -e "${YELLOW}  0. 직접 입력${NC}"
+            echo ""
+            continue
         elif [[ "$choice" =~ ^[1-9][0-9]*$ ]] && [ "$choice" -le "${#available_branches[@]}" ]; then
             # 숫자 선택
             target_branch="${available_branches[$((choice-1))]}"
@@ -497,10 +583,10 @@ DESCRIPTION:
 
 # AI API 호출
 if [ -n "$OPENAI_API_KEY" ]; then
-    echo -e "${BLUE}📡 OpenAI API 호출 중... (10초 타임아웃)${NC}"
+    echo -e "${BLUE}📡 OpenAI API 호출 중... (30초 타임아웃)${NC}"
     ai_response=$(call_openai "$prompt")
 elif [ -n "$ANTHROPIC_API_KEY" ]; then
-    echo -e "${BLUE}📡 Anthropic API 호출 중... (10초 타임아웃)${NC}"
+    echo -e "${BLUE}📡 Anthropic API 호출 중... (30초 타임아웃)${NC}"
     ai_response=$(call_anthropic "$prompt")
 else
     echo -e "${RED}❌ API 키가 설정되지 않았습니다.${NC}"
