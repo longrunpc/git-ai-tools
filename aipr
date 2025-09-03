@@ -320,10 +320,10 @@ else
     remote_status=()
     
     # 현재 브랜치를 제외한 모든 로컬 브랜치 가져오기
-    local all_branches=($(git branch --format='%(refname:short)' | grep -v "^$current_branch$"))
+    all_branches=($(git branch --format='%(refname:short)' | grep -v "^$current_branch$"))
     
     # 주요 브랜치들을 우선적으로 배치
-    local priority_branches=("main" "master" "dev" "develop")
+    priority_branches=("main" "master" "dev" "develop")
     
     # 우선순위 브랜치들을 먼저 추가
     for priority_branch in "${priority_branches[@]}"; do
@@ -388,8 +388,8 @@ else
     echo "사용 가능한 브랜치 (총 ${#available_branches[@]}개):"
     
     # 브랜치가 많을 때는 처음 20개만 표시하고 더보기 옵션 제공
-    local display_limit=20
-    local show_all=false
+    display_limit=20
+    show_all=false
     
     if [ ${#available_branches[@]} -gt $display_limit ] && [ "$show_all" = false ]; then
         echo -e "${YELLOW}💡 브랜치가 많습니다. 처음 ${display_limit}개만 표시합니다.${NC}"
